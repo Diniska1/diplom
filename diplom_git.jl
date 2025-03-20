@@ -64,8 +64,9 @@ function BCG(A, B)
     X = zeros(n, m)     # starting value
     R = B - A * X               # n x m
 
-    # пока что в блок помещаются первые r столбцов матрицы R
-    S = collect(1:r)
+
+    F = qr(R, Val(true)) 
+    S = copy(F.p[1:r])
     used_columns = Int32[]
     P = copy(R[:, S])                   # n x r
 
