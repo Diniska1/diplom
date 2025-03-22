@@ -43,6 +43,28 @@ function check(T)               # find index small diag elem
     return ind
 end
 
+function check_orth(A, P, P_prev)
+    d1 = diag(P_prev' * A * P_prev)
+    d1 = [1 / sqrt(d1[i]) for i in 1:size(d1, 1)]
+    D1 = zeros(size(d1, 1), size(d1, 1))
+
+    d2 = diag(P' * A * P)
+    d2 = [1 / sqrt(d2[i]) for i in 1:size(d2, 1)]
+    D2 = zeros(size(d2, 1), size(d2, 1))
+
+    for i in size(D1, 1)
+        D1[i, i] = d1[i]
+    end
+    for i in size(D2, 1)
+        D2[i, i] = d2[i]
+    end
+    
+    T = D2 * P' * A * P_prev * D1
+    res = maximum(abs.(T))
+
+    return res
+end
+
 function traspose_perm_matrix(a)
     n = size(a, 1)
     b = zeros(Int, n)
@@ -66,16 +88,22 @@ function BCG(A, B)
 
     F = qr(R, Val(true)) 
     S = copy(F.p[1:r])
+    P = copy(R[:, S])                   # n x r
+    P_prev = copy(P)
 
     used_columns = Int32[]
-    P = copy(R[:, S])                   # n x r
+    c_norms = Float64[]
 
     V = Matrix{Float64}(undef, n, 0)
 
     iteration = 1
     maxiter = 200
     while iteration < maxiter
-
+        if iteration > 2 && iteration % 2 == 0
+            push!(c_norms, check_orth(A, P, P_prev))
+            P_prev = P
+        end
+            
         alpha = (P' * A * P) \ P' * R       # r x m
         X = X + P * alpha                   # n x m
         R = R - A * P * alpha               # n x m
@@ -86,18 +114,21 @@ function BCG(A, B)
 
         ind = check(T)                              # find index small elem on diag(T)
         if ind == size(T, 1) + 1                    # if all elements on diag(T) is large
-
             beta = (P' * A * P) \ P' * A * R[:,S]
             P = R[:, S] - P * beta
 
+            if isempty(V) == false
+                gamma = V' * A * R[:, S]
+                P = P - V * gamma
+            end
+
         else
-            
             add_used_cols = [ S[F.p[i]] for i in ind:size(F.p, 1) ]
-            used_columns = [ used_columns ; add_used_cols ]                 # indexes of columns that converged
+            used_columns = [ used_columns ; add_used_cols ]                      # indexes of columns that converged
             others_cols = setdiff( 1:m, [ used_columns ; S[ F.p[1:ind-1] ] ] )   # indexes of cols that in R and not in used_columns and not in current block
             
             if isempty(others_cols) == true && isempty(F.p[1:ind-1]) == true                                # stopping criteria
-                println("!!! others_cols is empty !!!")                                                     # if all indexes of cols in used_columns than all converged than break 
+                println("!!! others_cols is empty !!!")                     # if all indexes of cols in used_columns than all converged than break 
                 break
             end
 
@@ -115,10 +146,9 @@ function BCG(A, B)
 
             V = hcat(V, P_wave)                                          # column concatenation
 
-            beta = P_cap' * R[:, S]
-            global gamma = V' * R[:, S]
+            beta = P_cap' * A * R[:, S]
+            gamma = V' * A * R[:, S]
             P = R[:, S] - P_cap * beta - V * gamma
-
         end
         
         iteration += 1
@@ -127,10 +157,11 @@ function BCG(A, B)
         println("!! Reached max iteration !!")
     end
 
+    println("max(c_norms of P_{k+2}' A P_k): ", maximum(c_norms))
     return X, iteration
 end
 
-n = 100
+n = 200
 A = float(zeros(n,n))
 for i in 1:n
     if i != 1
