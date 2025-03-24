@@ -81,7 +81,7 @@ function BCG(A, B)
         println("DimensionMismatch, rows A != rows B")
         exit()
     end
-    r = 3               # block size
+    r = 3          # block size
 
     X = zeros(n, m)     # starting value
     R = B - A * X               # n x m
@@ -97,13 +97,24 @@ function BCG(A, B)
     V = Matrix{Float64}(undef, n, 0)
 
     iteration = 1
-    maxiter = 200
+    maxiter = 1000
     while iteration < maxiter
+
         if iteration > 2 && iteration % 2 == 0
             push!(c_norms, check_orth(A, P, P_prev))
             P_prev = P
         end
-            
+
+        # if iteration % 100 == 0 && iteration > 2
+        #     println("iter = $iteration, max c_norms is ",maximum(c_norms))
+        # end    
+
+        
+        if isapprox(det(P' * A * P), 0.0)
+            print_matrix(P' * A * P, "P' * A * P")
+            println("P'AP SINGULAR")
+            exit()
+        end
         alpha = (P' * A * P) \ P' * R       # r x m
         X = X + P * alpha                   # n x m
         R = R - A * P * alpha               # n x m
@@ -117,12 +128,13 @@ function BCG(A, B)
             beta = (P' * A * P) \ P' * A * R[:,S]
             P = R[:, S] - P * beta
 
-            if isempty(V) == false
-                gamma = V' * A * R[:, S]
-                P = P - V * gamma
-            end
+            # if isempty(V) == false
+            #     gamma = V' * A * R[:, S]
+            #     P = P - V * gamma
+            # end
 
         else
+
             add_used_cols = [ S[F.p[i]] for i in ind:size(F.p, 1) ]
             used_columns = [ used_columns ; add_used_cols ]                      # indexes of columns that converged
             others_cols = setdiff( 1:m, [ used_columns ; S[ F.p[1:ind-1] ] ] )   # indexes of cols that in R and not in used_columns and not in current block
@@ -141,8 +153,8 @@ function BCG(A, B)
             M_transposed = traspose_perm_matrix(M)
             Q_cap, R_cap = qr_gram_schmidt(P[:, M_transposed], A, A_scal) # QR decomp with A-scalar product
 
-            P_cap = Q_cap[:, 1:ind-1]
-            P_wave = Q_cap[:, ind:size(Q_cap, 2)]
+            P_cap = Q_cap[:, 1:take_cols]
+            P_wave = Q_cap[:, (take_cols+1):size(Q_cap, 2)]
 
             V = hcat(V, P_wave)                                          # column concatenation
 
@@ -156,8 +168,9 @@ function BCG(A, B)
     if iteration == maxiter
         println("!! Reached max iteration !!")
     end
-
-    println("max(c_norms of P_{k+2}' A P_k): ", maximum(c_norms))
+    if isempty(c_norms) == false
+        println("max(c_norms of P_{k+2}' A P_k): ", maximum(c_norms))
+    end
     return X, iteration
 end
 
@@ -168,10 +181,14 @@ for i in 1:n
         A[i - 1, i] = i - 1
         A[i, i - 1] = i - 1
     end
+    if i > 3
+        A[i - 3, i] = 1
+        A[i, i - 3] = 1
+    end
     A[i, i] = 2 * i + 1
 end
 if isposdef(A) == false
-    println("Matrix A is NOT positive definitive\n")
+    println("Matrix A is NOT positive definitive or not symmertic\n")
     exit()
 end
 B = float(hcat(collect(1:n), circshift(collect(1:n), 1),  circshift(collect(1:n), 2), circshift(collect(1:n), 3), circshift(collect(1:n), 4)))
