@@ -53,10 +53,10 @@ function check_orth(A, P, P_prev)
     d2 = [1 / sqrt(d2[i]) for i in 1:size(d2, 1)]
     D2 = zeros(size(d2, 1), size(d2, 1))
 
-    for i in size(D1, 1)
+    for i in 1:size(D1, 1)
         D1[i, i] = d1[i]
     end
-    for i in size(D2, 1)
+    for i in 1:size(D2, 1)
         D2[i, i] = d2[i]
     end
     
@@ -69,8 +69,8 @@ end
 function norms2(R)
     norms = Float64[]
 
-    for i in size(R, 2)
-        push!(norms, sqrt(R[:, i]' * R[:, i]))
+    for i in 1:size(R, 2)
+        push!(norms, sqrt(R[:, i]' * R[:, i])) 
     end    
 
     return norms
@@ -89,9 +89,9 @@ function scale_columns(A, b)
     """
     res is matrix A: A[:, i] = A[:, i] * b[i] 
     """
-    A = A .* reshape(b, (1, length(b)))
-    return A
+    return A .* reshape(b, (1, length(b)))
 end
+
 
 function BCG(A, B)
     n = size(A, 1)
@@ -101,6 +101,7 @@ function BCG(A, B)
         exit()
     end
     r = 10          # block size
+    k = m           # amount not converged columns
 
     norms2_B = Float64[]
     norms2_B_div = Float64[]
@@ -117,24 +118,34 @@ function BCG(A, B)
 
     F = qr(R, Val(true)) 
     S = copy(F.p[1:r])
-    sort!(S)
     P = copy(R[:, S])                   # n x r
     P_prev = copy(P)
 
     converged_columns = Int32[]
+    perm = collect(1:m)
     c_norms = Float64[]
     V = Matrix{Float64}(undef, n, 0)
 
     iteration = 1
-    maxiter = 2000
+    maxiter = 3000
     while iteration < maxiter
 
         if iteration % 25 == 0
+            normsR = norms2(R)
+            if (maximum(normsR)) < eps
+                break
+            end
             println("iteration = $iteration")
             println("cnorm B - AX: ", maximum(abs.(R)))
-            println("max(2norm(R[i])): ", maximum(norms2(R)))
+            println("max(2norm(R[i])): ", maximum(normsR))
         end
-        
+
+        # if iteration > 2 && iteration % 2 == 0
+        #     push!(c_norms, check_orth(A, P, P_prev))
+        #     P_prev = P
+        # end
+  
+
         AP = A * P;
         PAP = P' * AP;
         PAP = (PAP + PAP') / 2;
@@ -143,11 +154,8 @@ function BCG(A, B)
         alpha = L' \ (L \ (P' * R))       # r x m
         X = X + P * alpha                   # n x m
         R = R - AP * alpha               # n x m
-            
-        normsR = norms2(R)
-        if (maximum(normsR)) < eps
-            break
-        end
+
+        
 
         _, TMP = qr(R[:, S])
         F = qr(TMP, Val(true))                   # PQR
@@ -194,7 +202,6 @@ function BCG(A, B)
             F = qr(TMP, Val(true))                            # PQR
             S_cap = others_cols[ F.p[1:take_cols] ]
             S = [ S[M[1:ind-1]] ; S_cap]
-            sort!(S)
             
             M_transposed = traspose_perm_matrix(M)
             Q_cap, R_cap = qr_gram_schmidt(P[:, M_transposed], A, A_scal) # QR decomp with A-scalar product
@@ -220,6 +227,8 @@ function BCG(A, B)
 
             
             println("end")
+            #println("cnorm VAP: ",maximum(abs.(AV' * P)))
+
         end
         
         iteration += 1
