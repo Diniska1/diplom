@@ -1,8 +1,6 @@
 using LinearAlgebra
 using FileIO, JLD2
 
-eps = 1e-3
-
 function A_scal(A, a, b)
     return (A * a)' * b
 end
@@ -21,7 +19,12 @@ function qr_gram_schmidt(A, B, inner_product::Function)
         v = A[:, j]  
 
         for i = 1:j-1
-            R[i, j] = inner_product(B, Q[:, i], A[:, j])
+            R[i, j] = inner_product(B, Q[:, i], v)
+            v = v - R[i, j] * Q[:, i]
+        end
+        
+        for i = 1:j-1
+            R[i, j] += inner_product(B, Q[:, i], v)
             v = v - R[i, j] * Q[:, i]
         end
 
@@ -32,7 +35,7 @@ function qr_gram_schmidt(A, B, inner_product::Function)
     return Q, R
 end
 
-function check(T)               # find index small diag elem
+function check(T, eps)               # find index small diag elem
     n = size(T, 1)
     ind = n + 1
     for i in 1:n
@@ -70,7 +73,7 @@ function norms2(R)
     norms = Float64[]
 
     for i in 1:size(R, 2)
-        push!(norms, sqrt(R[:, i]' * R[:, i])) 
+        push!(norms, norm(R[:, i])) 
     end    
 
     return norms
@@ -89,11 +92,23 @@ function scale_columns(A, b)
     """
     res is matrix A: A[:, i] = A[:, i] * b[i] 
     """
-    return A .* reshape(b, (1, length(b)))
+    return A * Diagonal(b)
+end
+
+function choose_new_residuals(R, m, S_cap, ind, eps)
+    r = size(S_cap, 1)
+    # S_cap = S[M[1:ind-1]]
+    S_wave = setdiff(1:m, S_cap)
+    Q_cap, _ = qr(R[:, S_cap])
+    TMP = (qr((Q_cap' * R[:, S_wave])[size(S_cap, 1)+1:end, :])).R
+    F = qr(TMP, ColumnNorm())
+    ind2 = check(F.R, eps)
+    take_cols = min(r - ind + 1, ind2)
+    return F, take_cols
 end
 
 
-function BCG(A, B)
+function BCG(A, B, eps)
     n = size(A, 1)
     n1, m = size(B) # amount right sides
     if n1 != n
@@ -103,85 +118,105 @@ function BCG(A, B)
     r = 10          # block size
     k = m           # amount not converged columns
 
-    norms2_B = Float64[]
-    norms2_B_div = Float64[]
-    for i in 1:size(B, 2)
-        t = sqrt(B[:, i]' * B[:, i])
-        push!(norms2_B, t)
-        push!(norms2_B_div, 1 / t)
-    end    
+    norms2_B = norms2(B)
 
-    B = scale_columns(B, norms2_B_div)
+    B = scale_columns(B, 1 ./ norms2_B)
 
     X = zeros(n, m)     # starting value
     R = B - A * X               # n x m
 
-    F = qr(R, Val(true)) 
+    F = qr(R, ColumnNorm()) 
     S = copy(F.p[1:r])
-    P = copy(R[:, S])                   # n x r
+#    S[1] = 685
+#    println("S = ", S)
+    P = Matrix(qr(copy(R[:, S])).Q)                   # n x r
     P_prev = copy(P)
+
+    println(size(P))
 
     converged_columns = Int32[]
     perm = collect(1:m)
     c_norms = Float64[]
     V = Matrix{Float64}(undef, n, 0)
+    AV = Matrix{Float64}(undef, n, 0)
+    L_VAV = Matrix{Float64}(undef, 0, 0)
+
+    #histP = Matrix{Float64}(undef, n, 0)
 
     iteration = 1
-    maxiter = 3000
+    maxiter = 5000
     while iteration < maxiter
 
-        if iteration % 25 == 0
+        if iteration % 1 == 0
             normsR = norms2(R)
+            println("iteration = $iteration")
+            println("norm2 RS: ", normsR[S])
+            println("maximum norm R = ", maximum(normsR))
             if (maximum(normsR)) < eps
+#                println("Norms R = ", normsR)
                 break
             end
-            println("iteration = $iteration")
-            println("cnorm B - AX: ", maximum(abs.(R)))
-            println("max(2norm(R[i])): ", maximum(normsR))
+#            println("cnorm B - AX: ", maximum(abs.(R)))
+#            println("max(2norm(R[i])): ", maximum(normsR))
         end
 
         # if iteration > 2 && iteration % 2 == 0
         #     push!(c_norms, check_orth(A, P, P_prev))
-        #     P_prev = P
+        #     P_prev = Peps
         # end
   
 
         AP = A * P;
-        PAP = P' * AP;
-        PAP = (PAP + PAP') / 2;
+        PAP = Hermitian(P' * AP);
         L = cholesky(PAP).L;
 
-        alpha = L' \ (L \ (P' * R))       # r x m
-        X = X + P * alpha                   # n x m
-        R = R - AP * alpha               # n x m
+#        normP = (L \ copy(P)')';
+#        if (size(histP, 2) > 0)
+#            println("Dot = ", maximum(abs.((A * normP)' * histP)))
+#        end
+#        histP = [histP copy(normP)];
+
+        alpha = L' \ (L \ (P' * R)) 
+        X += P * alpha              
+        R -= AP * alpha             
+
+        alpha2 = L_VAV' \ (L_VAV \ (V' * R));
+        X += V * alpha2             
+        R -= AV * alpha2            
+
+        alpha = L' \ (L \ (P' * R)) 
+        X += P * alpha              
+        R -= AP * alpha              
+
+        alpha2 = L_VAV' \ (L_VAV \ (V' * R));
+        X += V * alpha2                   
+        R -= AV * alpha2               
 
         
 
         _, TMP = qr(R[:, S])
-        F = qr(TMP, Val(true))                   # PQR
+        F = qr(TMP, ColumnNorm())                   # PQR
         M = F.p
         T = F.R
 
-        ind = check(T)                              # find index small elem on diag(T)
+        ind = check(T, eps)                              # find index small elem on diag(T)
         if ind == size(T, 1) + 1                    # if all elements on diag(T) is large
             beta = L' \ (L \ (AP' * R[:,S]))
             Pn = R[:, S] - P * beta
 
-            if isempty(V) == false
-                AV = A * V
-                gamma = (AV' * V) \ (AV' * R[:, S])
-                Pn = Pn - V * gamma
+            if size(V)[2] > 0
+                gamma = L_VAV' \ (L_VAV \ (AV' * R[:, S]))
+                Pn -= V * gamma
             end
 
             beta = L' \ (L \ (AP' * Pn))
             Pn -= P * beta
 
-            if isempty(V) == false
-                AV = A * V
-                gamma = (AV' * V) \ (AV' * Pn)
+            if size(V)[2] > 0
+                gamma = L_VAV' \ (L_VAV \ (AV' * Pn))
                 Pn -= V * gamma
             end
-            P = Pn;
+            P = Matrix(qr(Pn).Q);
 
         else
             print("\nCONVERGE: (iter = $iteration)")
@@ -190,47 +225,82 @@ function BCG(A, B)
             converged_columns = [ converged_columns ; add_used_cols ]                      # indexes of columns that converged
             others_cols = setdiff( 1:m, [ converged_columns ; S[ F.p[1:ind-1] ] ] )         # indexes of cols that in R and not in converged_columns and not in current block
             
-            if isempty(others_cols) == true && isempty(F.p[1:ind-1]) == true                                # stopping criteria
+            if isempty(others_cols) == true                                # stopping criteria
                 println("!!! others_cols is empty !!!")                     # if all indexes of cols in converged_columns than all converged than break 
                 break
             end
 
-            take_cols = min(size(T, 1) - ind + 1, size(others_cols, 1))     # amount columns to take in block
-            print(" take_cols = $take_cols ")
 
-            _, TMP = qr(R[:, others_cols])
-            F = qr(TMP, Val(true))                            # PQR
-            S_cap = others_cols[ F.p[1:take_cols] ]
-            S = [ S[M[1:ind-1]] ; S_cap]
+#             if ind > 1
+#                 TMP_Q = Matrix(qr(R[:, S[ F.p[1:ind-1] ]]).Q);
+#                 TMP = qr(R[:, others_cols] - TMP_Q * (TMP_Q' * R[:, others_cols])).R
+#             else
+#                 TMP = qr(R[:, others_cols]).R
+#             end
+#             F = qr(TMP, ColumnNorm())                            # PQR
+#             ind2 = check(F.R, eps);
             
-            M_transposed = traspose_perm_matrix(M)
-            Q_cap, R_cap = qr_gram_schmidt(P[:, M_transposed], A, A_scal) # QR decomp with A-scalar product
+#             take_cols = min(r - ind + 1, ind2)     # amount columns to take in block
+# #            print(" take_cols = $take_cols ")
+#             S_cap = others_cols[ F.p[1:take_cols] ]
+#             S = [ S[M[1:ind-1]] ; S_cap]
 
-            P_cap = Q_cap[:, 1:take_cols]
-            P_wave = Q_cap[:, (take_cols+1):size(Q_cap, 2)]
+            G, take_cols = choose_new_residuals(R, m, S, ind, eps)
+            other = setdiff(1:m, S)
+            S_cap = other[G.p[1:take_cols]]
+            S = [ S[M[1:ind-1]] ; S_cap]
 
-            nu = ((P_cap' * A) * P_cap) \ ((P_cap' * A) * P_wave);
-            P_wave -= P_cap * nu;
+            
+            Q_cap, _ = qr_gram_schmidt(P[:, M], A, A_scal) # QR decomp with A-scalar product
 
-            V = hcat(V, P_wave)                                          # column concatenation
+            if ind > 1
+                P_cap = Q_cap[:, 1:ind - 1]
+                P_wave = Q_cap[:, ind:size(Q_cap, 2)]
 
-            AV = A * V
-            VAV = V' * AV
+                AP = A * P_cap;
+                PAP = Hermitian(AP' * P_cap);
+                L = cholesky(PAP);
 
-            beta = ((P_cap' * A) * P_cap) \ ((P_cap' * A) * R[:, S])
-            gamma = (VAV) \ (AV' * R[:, S])
-            P = R[:, S] - P_cap * beta - V * gamma
+                nu = L' \ (L \ (AP' * P_wave));
+                P_wave -= P_cap * nu;
 
-            beta = ((P_cap' * A) * P_cap) \ ((P_cap' * A) * P)
-            gamma = (VAV) \ (AV' * P)
-            P -= P_cap * beta + V * gamma
+                V = hcat(V, P_wave)                                          # column concatenation
 
+                AV = A * V
+                VAV = Hermitian(V' * AV)
+                L_VAV = cholesky(VAV)
+
+                beta = L' \ (L \ (AP' * R[:, S]))
+                gamma = L_VAV' \ (L_VAV \ (AV' * R[:, S]))
+                P = R[:, S] - P_cap * beta - V * gamma
+
+                beta = L' \ (L \ (AP' * P))
+                gamma = L_VAV' \ (L_VAV \ (AV' * P))
+                P -= P_cap * beta + V * gamma
+            else
+
+                V = [V copy(Q_cap)];                                         # column concatenation
+
+#                println("V' A  norm_P = ", (A * normP)' * V);
+
+                AV = [AV A * Q_cap];
+                VAV = Hermitian(V' * AV)
+                L_VAV = cholesky(VAV)
+
+                gamma = L_VAV' \ (L_VAV \ (AV' * R[:, S]))
+                P = R[:, S] - V * gamma
+
+                gamma = L_VAV' \ (L_VAV \ (AV' * P))
+                P -= V * gamma
+            end
+            
+            P = Matrix(qr(P).Q);
             
             println("end")
             #println("cnorm VAP: ",maximum(abs.(AV' * P)))
 
         end
-        
+
         iteration += 1
     end
     if iteration == maxiter
@@ -244,18 +314,17 @@ function BCG(A, B)
     return X, iteration
 end
 
-
 f = FileIO.load("matrix.jld2");
-A = f["A"];
-B = f["B"];
+A = (f["A"]);
+B = (f["B"]);;
 
 println("n = ", size(A, 1))
 println("right sides = ", size(B, 2))
 
 println("function started")
 
-X, iter = BCG(A, B)
+X, iter = BCG(A, B, 1e-2)
 
 println("iterations = $iter")
-println("C_norm of B - AX is ", maximum(abs.(B - A*X)))
-println("max(2norm(B - AX)) is ", maximum(norms2(B - A*X)))
+#println("C_norm of B - AX is ", maximum(abs.(B - A*X)))
+println("max(2norm(B - AX)) is ", maximum(norms2(B - A*X) ./ norms2(B)))
